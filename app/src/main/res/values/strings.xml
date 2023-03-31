@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">MusicPlayer_Spotify_api</string>
+    <string name="err_spotify_disconnected">Spotify is not Connected. Use one of the connect buttons</string>
 </resources>
