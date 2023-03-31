@@ -3,23 +3,25 @@ package com.example.musicplayer_spotify_api
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.example.musicplayer_spotify_api.databinding.ActivityMainBinding
 import com.google.gson.GsonBuilder
-import com.spotify.android.appremote.api.ConnectionParams
-import com.spotify.android.appremote.api.Connector
-import com.spotify.android.appremote.api.SpotifyAppRemote
-import com.spotify.android.appremote.api.UserApi
+import com.spotify.android.appremote.api.*
 import com.spotify.android.appremote.api.error.SpotifyDisconnectedException
 import com.spotify.protocol.client.Subscription
-import com.spotify.protocol.types.Image
-import com.spotify.protocol.types.PlayerState
-import com.spotify.protocol.types.Track
+import com.spotify.protocol.types.*
 import com.spotify.sdk.android.auth.AccountsQueryParameters.CLIENT_ID
 import com.spotify.sdk.android.auth.AuthorizationClient
 import com.spotify.sdk.android.auth.AuthorizationRequest
 import com.spotify.sdk.android.auth.AuthorizationResponse
 import com.spotify.sdk.android.auth.LoginActivity.REQUEST_CODE
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 
 class MainActivity : AppCompatActivity() {
@@ -29,11 +31,12 @@ class MainActivity : AppCompatActivity() {
         const val STEP_MS = 15000L
     }
 
-    private val clientId = "2d99f60b8a84433e82702b97e39e0568"
+//    private val clientId = "------------------your client id here--------------------"
     private val redirectUri = "https://com.spotify.android.spotifysdkkotlindemo/callback"
     private var spotifyAppRemote: SpotifyAppRemote? = null
     private var userApi: UserApi? = null
     private val gson = GsonBuilder().setPrettyPrinting().create()
+    private val errorCallback = { throwable: Throwable -> logError(throwable) }
 
     private val playerStateEventCallback = Subscription.EventCallback<PlayerState> { playerState ->
         Log.v(TAG, String.format("Player State: %s", gson.toJson(playerState)))
@@ -58,7 +61,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
     }
 
     override fun onStart() {
@@ -99,31 +101,55 @@ class MainActivity : AppCompatActivity() {
 
     private fun connected() {
         // Then we will write some more code here.
+        // Play a playlist
+
+        binding.button.setOnClickListener {
+//          spotifyAppRemote?.playerApi?.play("spotify:playlist:37i9dQZF1DX2sUQwD7tbmL")
+            spotifyAppRemote?.playerApi?.play("spotify:track:3bH4HzoZZFq8UpZmI2AMgV")
+        }
+        binding.button2.setOnClickListener {
+            spotifyAppRemote?.playerApi?.pause()
+        }
+
 
         // Subscribe to PlayerState
         spotifyAppRemote?.playerApi?.subscribeToPlayerState()?.setEventCallback {
             val track: Track = it.track
             binding.textView.text = track.name
-            spotifyAppRemote!!.imagesApi.getImage(track.imageUri,Image.Dimension.LARGE)
-                .setResultCallback { bitmap->
+            spotifyAppRemote!!.imagesApi.getImage(track.imageUri, Image.Dimension.MEDIUM)
+                .setResultCallback { bitmap ->
                     binding.image.setImageBitmap(bitmap)
                 }
 
-            // Play a playlist
-            binding.button.setOnClickListener {
-//                spotifyAppRemote?.playerApi?.play("spotify:playlist:37i9dQZF1DX2sUQwD7tbmL")
-                spotifyAppRemote?.playerApi?.play("spotify:track:3bH4HzoZZFq8UpZmI2AMgV")
-            }
-            binding.button2.setOnClickListener {
-                spotifyAppRemote?.playerApi?.pause()
+            Log.d("Check link", "link uri" + track.uri)
+            Log.d("MainActivity", track.name + " by " + track.artist.name)
 
+        }
+        binding.button3.setOnClickListener {
+            assertAppRemoteConnected().let {
+                val scope = MainScope()
+                scope.launch {
+                    val combined = ArrayList<ListItem>(1)
+                    val listItems = loadRootRecommendations(it)
+                    listItems?.apply {
+                        for (i in items.indices) {
+                            if (items[i].playable) {
+                                combined.add(items[i])
+                            } else {
+                                val children: ListItems? = loadChildren(it, items[i])
+                                val convertolist = children?.items?.toList() as List<ListItem>
+                                combined.addAll(convertolist)
+                            }
+                        }
+                    }
+                    AlertDialog.Builder(this@MainActivity).setTitle(title)
+                        .setMessage(gson.toJson(combined)).create().show()
+                    
 
-                Log.d("Check link", "link uri" + track.uri)
-                Log.d("MainActivity", track.name + " by " + track.artist.name)
-
-
+                }
             }
         }
+
     }
 
     override fun onStop() {
@@ -158,16 +184,41 @@ class MainActivity : AppCompatActivity() {
         throw SpotifyDisconnectedException()
     }
 
-     /*private fun updateTrackCoverArt(playerState: PlayerState) {
-         // Get image from track
-         assertAppRemoteConnected()
-             .imagesApi
-             .getImage(playerState.track.imageUri, Image.Dimension.LARGE)
-             .setResultCallback { bitmap ->
-                 binding.image.setImageBitmap(bitmap)
+
+    private suspend fun loadRootRecommendations(appRemote: SpotifyAppRemote): ListItems? =
+        suspendCoroutine { cont ->
+            appRemote.contentApi
+                .getRecommendedContentItems(ContentApi.ContentType.FITNESS)
+                .setResultCallback { listItems -> cont.resume(listItems) }
+                .setErrorCallback { throwable ->
+                    errorCallback.invoke(throwable)
+                    cont.resumeWithException(throwable)
+                }
+        }
+    private fun logError(throwable: Throwable) {
+        Toast.makeText(this, "An error has occurred. Check the logs to know more.", Toast.LENGTH_SHORT).show()
+        Log.e(TAG, "", throwable)
+    }
+    private suspend fun loadChildren(appRemote: SpotifyAppRemote, parent: ListItem): ListItems? =
+        suspendCoroutine { cont ->
+            appRemote.contentApi
+                .getChildrenOfItem(parent, 6, 0)
+                .setResultCallback { listItems -> cont.resume(listItems) }
+                .setErrorCallback { throwable ->
+                    errorCallback.invoke(throwable)
+                    cont.resumeWithException(throwable)
+                }
+        }
+    /*private fun updateTrackCoverArt(playerState: PlayerState) {
+        // Get image from track
+        assertAppRemoteConnected()
+            .imagesApi
+            .getImage(playerState.track.imageUri, Image.Dimension.LARGE)
+            .setResultCallback { bitmap ->
+                binding.image.setImageBitmap(bitmap)
 //                 binding.imageLabel.text = String.format(
 //                     Locale.ENGLISH, "%d x %d", bitmap.width, bitmap.height)
-             }
-     }*/
+            }
+    }*/
 
 }
